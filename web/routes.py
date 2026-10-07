@@ -1,11 +1,11 @@
 """Flask API 路由。
 
 把平台的测试执行引擎、并发调度、结果收集、报告、覆盖率、缺陷、环境、
-定时任务、通知等能力暴露为 REST 接口，前端 10 个页面通过 ``fetch`` 调用。
+定时任务、通知、发布门禁等能力暴露为 REST 接口，前端页面通过 ``fetch`` 调用。
 
-所有实体（项目 / 用例 / 套件 / 缺陷 / 环境 / 计划 / 集成）以 JSON 分片
-存储，构建结果按「项目 + 构建」二次分片存储；写路径全部走文件锁 +
-原子替换，多 worker 并发下不丢、不错位。
+所有实体（项目 / 用例 / 套件 / 缺陷 / 环境 / 计划 / 集成 / 门禁规则与审批）
+以 JSON 分片存储，构建结果按「项目 + 构建」二次分片存储；写路径全部走
+文件锁 + 原子替换，多 worker 并发下不丢、不错位。
 """
 
 from __future__ import annotations
@@ -55,6 +55,10 @@ def _defects():
 
 def _notify():
     return current_app.config["NOTIFY"]
+
+
+def _gate():
+    return current_app.config["GATE"]
 
 
 def _payload() -> dict:
@@ -686,6 +690,155 @@ def test_integration(integration_id: str):
 @api.get("/projects/<project_id>/events")
 def list_events(project_id: str):
     return jsonify({"events": _notify().events(project_id)})
+
+
+# ---------------------------------------------------------------------------
+# 发布门禁
+# ---------------------------------------------------------------------------
+
+def _actor(data: dict) -> str:
+    """操作人：请求体未显式给出时回退为 system（自动流程）。"""
+    return (data.get("actor") or "").strip() or "system"
+
+
+@api.get("/projects/<project_id>/gate/rules")
+def gate_rule_versions(project_id: str):
+    """规则版本列表（倒序）：规则改过之后历史版本仍可查。"""
+    versions = _gate().rule_versions(project_id)
+    return jsonify({"versions": versions,
+                    "current": versions[0] if versions else None})
+
+
+@api.post("/projects/<project_id>/gate/rules")
+def gate_create_rule(project_id: str):
+    """新建一版规则（版本号递增，旧版本保留）。"""
+    if _store("projects").get(project_id) is None:
+        return _err("项目不存在", 404)
+    data = _payload()
+    rule = _gate().create_rule(project_id, data, actor=_actor(data))
+    if "error" in rule:
+        return _err(rule["error"])
+    return jsonify(rule)
+
+
+@api.get("/projects/<project_id>/gate/rules/<int:version>")
+def gate_get_rule_version(project_id: str, version: int):
+    rule = _gate().get_rule_version(project_id, version)
+    if rule is None:
+        return _err("规则版本不存在", 404)
+    # 该版本规则下产生的判定结果（历史规则可追溯当时的判定）
+    evals = _gate().evaluations(project_id, rule_version=version)
+    return jsonify({"rule": rule, "evaluations": evals})
+
+
+@api.get("/projects/<project_id>/gate/overview")
+def gate_overview(project_id: str):
+    """构建 + 门禁判定 + 放行状态一览。"""
+    return jsonify({"builds": _gate().overview(project_id)})
+
+
+@api.get("/projects/<project_id>/gate/evaluations")
+def gate_evaluations(project_id: str):
+    build_id = request.args.get("build_id")
+    rule_version = request.args.get("rule_version", type=int)
+    limit = request.args.get("limit", 100, type=int)
+    return jsonify({"evaluations": _gate().evaluations(
+        project_id, build_id=build_id, rule_version=rule_version, limit=limit)})
+
+
+@api.post("/projects/<project_id>/gate/evaluate")
+def gate_evaluate(project_id: str):
+    """手动重新判定一场构建（如缺陷关闭后复评）。"""
+    data = _payload()
+    build_id = data.get("build_id")
+    if not build_id:
+        return _err("缺少 build_id")
+    result = _gate().evaluate_build(project_id, build_id,
+                                    actor=_actor(data), trigger="manual")
+    if result.get("decision") is None:
+        return _err(result.get("error", "判定失败"))
+    return jsonify(result)
+
+
+@api.get("/builds/<build_id>/gate")
+def build_gate_state(build_id: str):
+    """单构建的门禁全景：最新判定 + 放行状态 + 审批单。"""
+    build, err = _build_or_404(build_id)
+    if err:
+        return err
+    return jsonify(_gate().release_state(build["project_id"], build_id))
+
+
+@api.post("/builds/<build_id>/gate/release")
+def build_gate_release(build_id: str):
+    """有条件发布的构建：人工确认放行。"""
+    build, err = _build_or_404(build_id)
+    if err:
+        return err
+    data = _payload()
+    actor = _actor(data)
+    if actor == "system":
+        return _err("确认放行必须填写操作人")
+    result = _gate().confirm_release(build["project_id"], build_id,
+                                     actor=actor, note=data.get("note", ""))
+    if "error" in result:
+        return _err(result["error"])
+    return jsonify(result)
+
+
+@api.post("/builds/<build_id>/gate/approvals")
+def build_gate_request_approval(build_id: str):
+    """人工补发起审批单。"""
+    build, err = _build_or_404(build_id)
+    if err:
+        return err
+    data = _payload()
+    result = _gate().request_approval(build["project_id"], build_id,
+                                      actor=_actor(data),
+                                      reason=data.get("reason", ""))
+    if "error" in result:
+        return _err(result["error"])
+    return jsonify(result)
+
+
+@api.get("/projects/<project_id>/gate/approvals")
+def gate_approvals(project_id: str):
+    status = request.args.get("status")
+    return jsonify({"approvals": _gate().approvals(project_id, status=status)})
+
+
+@api.post("/gate/approvals/<approval_id>/decide")
+def gate_decide_approval(approval_id: str):
+    """审批：approve 放行 / reject 保持阻断，操作人与时间留痕。"""
+    data = _payload()
+    action = data.get("action")
+    if action not in ("approve", "reject"):
+        return _err("action 必须是 approve 或 reject")
+    actor = _actor(data)
+    if actor == "system":
+        return _err("审批必须填写操作人")
+    result = _gate().decide_approval(approval_id, actor=actor,
+                                     approve=(action == "approve"),
+                                     note=data.get("note", ""))
+    if "error" in result:
+        return _err(result["error"])
+    return jsonify(result)
+
+
+@api.get("/projects/<project_id>/gate/events")
+def gate_events(project_id: str):
+    """操作留痕：判定 / 放行 / 审批 / 规则变更，含操作人与时间。"""
+    build_id = request.args.get("build_id")
+    limit = request.args.get("limit", 200, type=int)
+    return jsonify({"events": _gate().events(project_id, build_id=build_id,
+                                             limit=limit)})
+
+
+@api.get("/gate/rule-template")
+def gate_rule_template():
+    """默认规则模板（前端「使用模板」一键填充）。"""
+    from engine.gate import DEFAULT_RULE_CONDITIONS
+    return jsonify({"name": "发布门禁规则", "conditions": DEFAULT_RULE_CONDITIONS})
 
 
 # ---------------------------------------------------------------------------

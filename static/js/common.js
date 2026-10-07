@@ -10,6 +10,7 @@ const PAGES = [
   { file: "reports.html",     name: "测试报告",     desc: "通过率耗时" },
   { file: "coverage.html",    name: "代码覆盖率",   desc: "覆盖率分析" },
   { file: "defects.html",     name: "缺陷跟踪",     desc: "缺陷闭环" },
+  { file: "gate.html",        name: "发布门禁",     desc: "判定与审批放行" },
   { file: "environments.html",name: "环境管理",     desc: "配置与依赖" },
   { file: "schedules.html",   name: "定时任务",     desc: "计划与触发" },
   { file: "notifications.html", name: "通知与集成", desc: "Webhook 等" },
@@ -18,14 +19,43 @@ const PAGES = [
 const PAGE_NAMES = {
   projects: "项目管理", cases: "测试用例", suites: "测试套件与分组",
   monitor: "执行监控", reports: "测试报告", coverage: "代码覆盖率",
-  defects: "缺陷跟踪", environments: "环境管理", schedules: "定时任务与触发",
-  notifications: "通知与集成",
+  defects: "缺陷跟踪", gate: "发布门禁", environments: "环境管理",
+  schedules: "定时任务与触发", notifications: "通知与集成",
 };
 
 const STATUS_LABELS = {
   pending: "等待中", running: "运行中", passed: "通过", failed: "失败",
   cancelled: "已取消", error: "错误", skipped: "跳过", timeout: "超时",
 };
+
+/* 发布门禁 */
+const GATE_DECISION_LABELS = {
+  allow: "允许发布", conditional: "有条件发布", deny: "禁止发布",
+};
+const RELEASE_STATUS_LABELS = {
+  none: "未判定", released: "已放行", conditional: "待确认放行",
+  blocked: "禁止发布·待审批", approved: "审批通过·已放行", rejected: "审批拒绝",
+};
+const APPROVAL_STATUS_LABELS = {
+  pending: "待审批", approved: "已通过", rejected: "已拒绝",
+};
+const GATE_ACTION_LABELS = {
+  evaluated: "门禁判定", released: "确认放行", rule_created: "规则变更",
+  approval_requested: "发起审批", approval_approved: "审批通过",
+  approval_rejected: "审批拒绝",
+};
+
+function gateDecisionBadge(decision) {
+  if (!decision) return '<span class="badge pending">未判定</span>';
+  const cls = { allow: "passed", conditional: "timeout", deny: "failed" }[decision] || "pending";
+  return `<span class="badge ${cls}">${GATE_DECISION_LABELS[decision] || decision}</span>`;
+}
+
+function releaseStatusBadge(status) {
+  const cls = { none: "pending", released: "passed", conditional: "timeout",
+    blocked: "failed", approved: "blue", rejected: "cancelled" }[status] || "pending";
+  return `<span class="badge ${cls}">${RELEASE_STATUS_LABELS[status] || status}</span>`;
+}
 
 const PRIORITY_LABELS = { P0: "P0 · 最高", P1: "P1 · 高", P2: "P2 · 中", P3: "P3 · 低" };
 

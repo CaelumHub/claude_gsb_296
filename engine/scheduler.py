@@ -34,7 +34,7 @@ class Scheduler:
     def __init__(self, registry, build_registry, executor, env_manager,
                  report_gen, coverage_analyzer, defect_manager, notify_manager,
                  max_build_workers: int = 4, max_case_workers: int = 8,
-                 tick_seconds: float = 20.0):
+                 tick_seconds: float = 20.0, gate_manager=None):
         self.registry = registry
         self.builds = build_registry
         self.executor = executor
@@ -43,6 +43,7 @@ class Scheduler:
         self.coverage = coverage_analyzer
         self.defects = defect_manager
         self.notify = notify_manager
+        self.gate = gate_manager
 
         self.max_build_workers = max_build_workers
         self.max_case_workers = max_case_workers
@@ -272,6 +273,19 @@ class Scheduler:
             failures = store.results(build_id, where=[("status", "in", ["failed", "error", "timeout"])])
             for fr in failures[:20]:
                 self.defects.create_from_case(project_id, fr, build_id)
+
+        # 发布门禁：报告 / 覆盖率 / 自动缺陷都就绪后再判定，指标才完整。
+        # 判定为「禁止发布」时门禁会自动发起人工审批单。
+        if self.gate is not None:
+            try:
+                result = self.gate.evaluate_build(
+                    project_id, build_id, actor="system", trigger="auto")
+                decision = result.get("decision")
+                if decision:
+                    store.append_log(build_id, f"发布门禁判定: {decision}"
+                                               f"（规则 v{result.get('rule_version')}）")
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------ 定时循环
     def _tick_loop(self) -> None:

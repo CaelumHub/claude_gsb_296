@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 
 from engine import new_id
+from engine.gate import DEFAULT_RULE_CONDITIONS
 
 
 def seed_demo_data(registry, env_mgr, notify_mgr) -> dict:
@@ -131,13 +132,26 @@ def seed_demo_data(registry, env_mgr, notify_mgr) -> dict:
         "type": "webhook",
         "name": "CI Webhook",
         "config": {"url": "https://example.com/hooks/ci"},
-        "events": ["build.finished", "build.failed"],
+        "events": ["build.finished", "build.failed", "gate.denied"],
     })
     notify_mgr.create(pid, {
         "type": "email",
         "name": "团队邮件",
         "config": {"address": "qa@example.com"},
-        "events": ["build.failed"],
+        "events": ["build.failed", "gate.denied"],
+    })
+
+    # 预置一版发布门禁规则（v1），构建结束后即自动判定「能否发布」
+    registry.store("gate_rules").insert({
+        "id": new_id("rule"),
+        "project_id": pid,
+        "version": 1,
+        "name": "发布门禁规则",
+        "enabled": True,
+        "conditions": DEFAULT_RULE_CONDITIONS,
+        "note": "演示项目默认门禁",
+        "created_by": "system",
+        "created_at": time.time(),
     })
 
     return {"project": proj, "env_id": env["id"], "suite_id": suite["id"]}

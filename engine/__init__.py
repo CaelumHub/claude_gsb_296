@@ -10,6 +10,7 @@
 - :mod:`engine.report`      测试报告生成（通过率 / 耗时 / 分组 / 趋势）
 - :mod:`engine.defects`     缺陷跟踪
 - :mod:`engine.notify`      通知与集成
+- :mod:`engine.gate`        发布门禁（规则版本化 + 判定 + 审批放行 + 留痕）
 - :mod:`engine.scheduler`   并发调度（构建池 + 用例池 + 定时触发循环）
 """
 
@@ -17,6 +18,12 @@ from .models import (
     PRIORITIES,
     CASE_STATUSES,
     BUILD_STATUSES,
+    GATE_DECISIONS,
+    GATE_METRICS,
+    GATE_OPS,
+    GATE_LEVELS,
+    RELEASE_STATUSES,
+    APPROVAL_STATUSES,
     new_id,
     now,
 )
@@ -27,12 +34,19 @@ from .coverage import CoverageAnalyzer
 from .report import ReportGenerator
 from .defects import DefectManager
 from .notify import NotificationManager
+from .gate import GateManager
 from .scheduler import Scheduler
 
 __all__ = [
     "PRIORITIES",
     "CASE_STATUSES",
     "BUILD_STATUSES",
+    "GATE_DECISIONS",
+    "GATE_METRICS",
+    "GATE_OPS",
+    "GATE_LEVELS",
+    "RELEASE_STATUSES",
+    "APPROVAL_STATUSES",
     "new_id",
     "now",
     "CronSchedule",
@@ -45,5 +59,6 @@ __all__ = [
     "ReportGenerator",
     "DefectManager",
     "NotificationManager",
+    "GateManager",
     "Scheduler",
 ]
