@@ -16,7 +16,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine import (CoverageAnalyzer, DefectManager, EnvironmentManager,
-                    NotificationManager, ReportGenerator, Scheduler, TestExecutor)
+                    NotificationManager, ReleaseGateManager, ReportGenerator,
+                    Scheduler, TestExecutor)
 from storage import BuildStoreRegistry, StoreRegistry
 
 
@@ -29,8 +30,10 @@ def _make_scheduler(data_root):
     report = ReportGenerator(builds)
     defects = DefectManager(registry)
     notify = NotificationManager(registry)
+    gate = ReleaseGateManager(registry, builds, report, coverage, defects, notify)
     sched = Scheduler(registry, builds, executor, env_mgr, report, coverage,
-                      defects, notify, max_build_workers=2, max_case_workers=4,
+                      defects, notify, gate_manager=gate,
+                      max_build_workers=2, max_case_workers=4,
                       tick_seconds=0.2)
     return registry, builds, env_mgr, sched
 
@@ -87,6 +90,12 @@ class TestSchedulerEndToEnd(unittest.TestCase):
         # 报告 / 覆盖率已生成
         self.assertIsNotNone(self.builds.for_project(pid).read_report(build_id))
         self.assertIsNotNone(self.builds.for_project(pid).read_coverage(build_id))
+
+        # 发布门禁已在报告、覆盖率、自动缺陷处理完成后自动判定
+        decisions = self.registry.store("gate_decisions").query(
+            where=[("build_id", "eq", build_id)])
+        self.assertEqual(len(decisions), 1)
+        self.assertIn(decisions[0]["outcome"], ("allow", "conditional", "blocked"))
 
     def test_concurrent_builds(self):
         pid, suite = self._setup_project(20)

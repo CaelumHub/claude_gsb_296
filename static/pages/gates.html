@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>发布门禁 - 自动化测试与持续集成平台</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    .gate-head { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+    .gate-head .operator { width: 180px; }
+    .condition-row { border: 1px solid var(--border); border-radius: 9px; padding: 10px; margin-bottom: 8px; background: var(--surface-2); }
+    .condition-grid { display: grid; grid-template-columns: 1.4fr .8fr .8fr 1fr .9fr 42px; gap: 8px; align-items: end; }
+    .condition-grid input, .condition-grid select { padding: 7px 9px; font-size: 13px; }
+    .build-gate-item { border: 1px solid var(--border); border-radius: 9px; padding: 11px 13px; margin-bottom: 8px; cursor: pointer; }
+    .build-gate-item:hover { border-color: var(--primary); }
+    .build-gate-item.active { border-color: var(--primary); background: var(--primary-soft); }
+    .metric-pill { display:inline-block; margin: 0 8px 6px 0; font-size: 12px; color: var(--text-muted); }
+    .audit-row { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .mini { font-size: 12px; }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="site-sidebar"></aside>
+
+  <main class="main">
+    <h1 class="page-title">发布门禁</h1>
+    <p class="page-desc">按项目配置通过率、失败等级、覆盖率、未关闭缺陷等组合条件；每场构建自动判定，禁止发布需审批通过后才能放行，全流程留痕可追溯。</p>
+
+    <section class="card">
+      <div class="row spread">
+        <div class="row">
+          <label style="margin:0 6px 0 0;align-self:center">项目</label>
+          <select id="project-select" style="width:260px" onchange="switchProject(this.value)"></select>
+        </div>
+        <div class="row">
+          <div>
+            <label>当前操作人 *</label>
+            <input class="operator" type="text" id="operator" placeholder="姓名 / 工号">
+          </div>
+          <button class="btn secondary" id="btn-refresh">刷新</button>
+        </div>
+      </div>
+      <div class="muted mini mt">操作人会记录到规则变更、人工判定、审批和放行审计中。浏览器仅在本机 localStorage 记住该值。</div>
+    </section>
+
+    <div class="grid cols-2">
+      <section class="card">
+        <h2>门禁规则（项目独立配置）</h2>
+        <div id="rule-meta" class="muted mini">加载中…</div>
+        <div class="mt">
+          <label>规则名称</label>
+          <input type="text" id="rule-name">
+        </div>
+        <div class="mt row">
+          <label style="display:inline-flex;gap:6px;align-items:center;margin:0">
+            <input type="checkbox" id="rule-enabled" style="width:auto"> 启用门禁
+          </label>
+          <input type="text" id="rule-note" placeholder="本次修改说明，例如：提高核心模块覆盖率门槛" style="flex:1;min-width:260px">
+        </div>
+        <div class="mt row spread">
+          <h3 style="margin:0">阈值与条件组合</h3>
+          <button class="btn small secondary" type="button" onclick="addCondition()">新增条件</button>
+        </div>
+        <div id="conditions" class="mt"></div>
+        <div class="row mt">
+          <button class="btn" id="btn-save-rule">保存为新版本</button>
+          <button class="btn secondary" type="button" onclick="resetConditions(defaultRuleConditions)">恢复默认条件</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>最近构建判定</h2>
+        <div id="build-list"><div class="empty">加载中…</div></div>
+      </section>
+    </div>
+
+    <section class="card" id="detail-card">
+      <h2>判定详情与放行操作</h2>
+      <div id="detail"><div class="empty">请选择一场构建</div></div>
+    </section>
+
+    <div class="grid cols-3">
+      <section class="card">
+        <h2>待人工审批</h2>
+        <div id="approvals"><div class="empty">加载中…</div></div>
+      </section>
+      <section class="card">
+        <h2>历史规则版本</h2>
+        <div id="versions"><div class="empty">暂无自定义版本</div></div>
+      </section>
+      <section class="card">
+        <h2>审计流水</h2>
+        <div id="audit"><div class="empty">暂无操作</div></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script src="/static/js/common.js"></script>
+<script>
+renderNav("gates");
+
+const METRIC_OPTIONS = [
+  { value: "build_status", label: "构建状态", numeric: false },
+  { value: "pass_rate", label: "通过率（%）", numeric: true },
+  { value: "coverage", label: "代码覆盖率（%）", numeric: true },
+  { value: "failed_cases", label: "失败/错误/超时用例总数", numeric: true },
+  { value: "priority_failures", label: "指定等级失败用例数", numeric: true, level: "priority" },
+  { value: "open_defects", label: "未关闭缺陷总数", numeric: true },
+  { value: "severity_defects", label: "指定严重级未关闭缺陷数", numeric: true, level: "severity" },
+];
+const PRIORITY_OPTS = ["P0", "P1", "P2", "P3"];
+const SEVERITY_OPTS = ["blocker", "critical", "major", "minor", "trivial"];
+const defaultRuleConditions = [
+  { metric: "build_status", name: "构建必须成功", operator: "eq", threshold: "passed", on_fail: "blocked", enabled: true },
+  { metric: "pass_rate", name: "通过率不低于 80%", operator: "gte", threshold: 80, on_fail: "blocked", enabled: true },
+  { metric: "pass_rate", name: "通过率不低于 95%", operator: "gte", threshold: 95, on_fail: "conditional", enabled: true },
+  { metric: "coverage", name: "覆盖率不低于 60%", operator: "gte", threshold: 60, on_fail: "blocked", enabled: true },
+  { metric: "coverage", name: "覆盖率不低于 80%", operator: "gte", threshold: 80, on_fail: "conditional", enabled: true },
+  { metric: "priority_failures", name: "P0 用例零失败", operator: "lte", threshold: 0, level: "P0", on_fail: "blocked", enabled: true },
+  { metric: "priority_failures", name: "P1 失败不超过 1 条", operator: "lte", threshold: 1, level: "P1", on_fail: "blocked", enabled: true },
+  { metric: "open_defects", name: "未关闭缺陷不超过 10 个", operator: "lte", threshold: 10, on_fail: "blocked", enabled: true },
+];
+
+let projectId = null;
+let dashboard = null;
+let currentBuildId = null;
+let conditions = [];
+
+$("#operator").value = localStorage.getItem("gate_operator") || "";
+$("#operator").onchange = () => localStorage.setItem("gate_operator", $("#operator").value.trim());
+
+function operator() {
+  const v = $("#operator").value.trim();
+  if (!v) { toast("请先填写当前操作人", "error"); return ""; }
+  localStorage.setItem("gate_operator", v);
+  return v;
+}
+function outcomeBadge(o) {
+  const cls = o || "not_evaluated";
+  return `<span class="badge ${cls}">${esc(GATE_OUTCOME_LABELS[cls] || "未判定")}</span>`;
+}
+function approvalBadge(s) {
+  return `<span class="badge ${s || "pending"}">${esc(APPROVAL_LABELS[s] || s || "待审批")}</span>`;
+}
+function metricLabel(m) { return (METRIC_OPTIONS.find(x => x.value === m) || {}).label || m; }
+
+async function init() {
+  const params = new URLSearchParams(location.search);
+  projectId = await fillProjectSelect($("#project-select"), params.get("project_id"));
+  await loadDashboard();
+  const first = dashboard && dashboard.builds && dashboard.builds[0];
+  if (first) selectBuild(first.build.id);
+}
+async function switchProject(id) { projectId = id; currentBuildId = null; await loadDashboard(); }
+
+async function loadDashboard() {
+  if (!projectId) return;
+  dashboard = await api(`/api/projects/${projectId}/gate`);
+  renderRule();
+  renderBuilds();
+  renderApprovals();
+  renderVersions();
+  renderAudit();
+  if (currentBuildId) renderDetail();
+}
+
+function renderRule() {
+  const rule = dashboard.rule || {};
+  $("#rule-meta").innerHTML = `当前版本 <strong>v${rule.version || 0}</strong> · ${rule.enabled ? "已启用" : "已停用（不拦截发布）"} · 创建人 ${esc(rule.created_by || "system")} · ${fmtTime(rule.created_at)}`;
+  $("#rule-name").value = rule.name || "项目发布门禁";
+  $("#rule-enabled").checked = !!rule.enabled;
+  resetConditions(rule.conditions || defaultRuleConditions);
+}
+
+function resetConditions(list) {
+  conditions = JSON.parse(JSON.stringify(list || []));
+  renderConditions();
+}
+
+function addCondition(c = {}) {
+  conditions.push({
+    metric: c.metric || "pass_rate",
+    name: c.name || "",
+    operator: c.operator || "gte",
+    threshold: c.threshold ?? 80,
+    level: c.level || "P0",
+    on_fail: c.on_fail || "blocked",
+    enabled: c.enabled !== false,
+  });
+  renderConditions();
+}
+function removeCondition(i) { conditions.splice(i, 1); renderConditions(); }
+
+function renderConditions() {
+  $("#conditions").innerHTML = conditions.map((c, i) => {
+    const meta = METRIC_OPTIONS.find(x => x.value === c.metric) || METRIC_OPTIONS[1];
+    const level = meta.level === "priority"
+      ? `<select onchange="conditions[${i}].level=this.value">${PRIORITY_OPTS.map(p => `<option ${p===c.level?"selected":""}>${p}</option>`).join("")}</select>`
+      : meta.level === "severity"
+      ? `<select onchange="conditions[${i}].level=this.value">${SEVERITY_OPTS.map(p => `<option ${p===c.level?"selected":""}>${p}</option>`).join("")}</select>`
+      : `<input type="text" value="—" disabled>`;
+    const compare = c.metric === "build_status"
+      ? `<input value="必须 passed" disabled>`
+      : `<select onchange="conditions[${i}].operator=this.value">
+           ${["gte","lte","gt","lt","eq","ne"].map(op => `<option value="${op}" ${op===c.operator?"selected":""}>${op}</option>`).join("")}
+         </select>`;
+    const threshold = c.metric === "build_status"
+      ? `<input type="text" value="passed" disabled>`
+      : `<input type="number" step="0.1" value="${esc(c.threshold)}" onchange="conditions[${i}].threshold=parseLiteral(this.value)">`;
+    return `<div class="condition-row">
+      <div class="condition-grid">
+        <div><label>条件名称</label><input type="text" value="${esc(c.name || "")}" onchange="conditions[${i}].name=this.value"></div>
+        <div><label>指标</label><select onchange="changeMetric(${i}, this.value)">${METRIC_OPTIONS.map(m => `<option value="${m.value}" ${m.value===c.metric?"selected":""}>${m.label}</option>`).join("")}</select></div>
+        <div><label>${meta.level ? "等级" : "比较"}</label>${level}</div>
+        <div><label>比较 / 阈值</label><div class="row" style="gap:6px">${compare}${threshold}</div></div>
+        <div><label>未满足时</label><select onchange="conditions[${i}].on_fail=this.value">
+          <option value="blocked" ${c.on_fail==="blocked"?"selected":""}>禁止发布</option>
+          <option value="conditional" ${c.on_fail==="conditional"?"selected":""}>有条件发布</option>
+        </select></div>
+        <button class="btn small danger" type="button" onclick="removeCondition(${i})">删</button>
+      </div>
+      <label class="mini mt" style="display:inline-flex;gap:5px;align-items:center;margin-bottom:0">
+        <input type="checkbox" style="width:auto" ${c.enabled !== false ? "checked" : ""} onchange="conditions[${i}].enabled=this.checked"> 启用
+      </label>
+    </div>`;
+  }).join("") || '<div class="empty">暂无条件；保存后任何终态构建都将允许发布。</div>';
+}
+function changeMetric(i, metric) {
+  const meta = METRIC_OPTIONS.find(x => x.value === metric);
+  conditions[i].metric = metric;
+  conditions[i].level = meta.level === "severity" ? "blocker" : "P0";
+  if (metric === "build_status") conditions[i].threshold = "passed";
+  else if (["pass_rate", "coverage"].includes(metric)) conditions[i].threshold = 80;
+  else conditions[i].threshold = 0;
+  renderConditions();
+}
+
+$("#btn-save-rule").onclick = async () => {
+  const actor = operator(); if (!actor) return;
+  const note = $("#rule-note").value.trim();
+  if (!note && !confirm("未填写修改说明，确认保存为新版本？")) return;
+  try {
+    await api(`/api/projects/${projectId}/gate/rule`, { method: "PUT", body: {
+      name: $("#rule-name").value.trim() || "项目发布门禁",
+      enabled: $("#rule-enabled").checked,
+      change_note: note,
+      conditions,
+    }});
+    toast("门禁规则已保存为新版本");
+    $("#rule-note").value = "";
+    await loadDashboard();
+  } catch (e) { toast(e.message, "error"); }
+};
+
+function renderBuilds() {
+  const rows = dashboard.builds || [];
+  if (!rows.length) { $("#build-list").innerHTML = '<div class="empty">暂无终态或历史构建</div>'; return; }
+  $("#build-list").innerHTML = rows.map(r => {
+    const b = r.build, d = r.decision, a = r.approval, rel = r.release;
+    const terminal = !["pending", "running"].includes(b.status);
+    return `<div class="build-gate-item ${b.id===currentBuildId?"active":""}" onclick="selectBuild('${b.id}')">
+      <div class="row spread"><strong>${esc(b.name || b.id)}</strong>
+        ${d ? outcomeBadge(d.outcome) : `<span class="badge ${terminal ? "pending" : "running"}">${terminal ? "未判定" : "执行中"}</span>`}
+      </div>
+      <div class="mini muted mt">通过 ${b.passed||0}/${b.total||0} · 覆盖率 ${d ? Math.round(d.metrics.coverage) + "%" : "—"} · 未关闭缺陷 ${d ? d.metrics.open_defects : "—"}</div>
+      <div class="mini muted">${a ? approvalBadge(a.status) : ""} ${rel ? '<span class="badge approved">已放行</span>' : ""} ${fmtTime(b.finished_at)}</div>
+    </div>`;
+  }).join("");
+}
+
+function selectBuild(id) { currentBuildId = id; renderBuilds(); renderDetail(); }
+
+function renderDetail() {
+  const row = (dashboard.builds || []).find(x => x.build.id === currentBuildId);
+  if (!row) { $("#detail").innerHTML = '<div class="empty">请选择一场构建</div>'; return; }
+  const b = row.build, d = row.decision, a = row.approval, rel = row.release;
+  const running = ["pending", "running"].includes(b.status);
+  if (running) {
+    $("#detail").innerHTML = `<div class="empty">构建仍在执行，结束后会自动判定。</div>`;
+    return;
+  }
+  if (!d) {
+    $("#detail").innerHTML = `<div class="row spread"><div class="muted">该构建尚未生成门禁判定。</div>
+      <button class="btn" onclick="evaluateBuild('${b.id}')">立即判定</button></div>`;
+    return;
+  }
+  const m = d.metrics;
+  const rows = (d.condition_results || []).map(c => `<tr>
+    <td>${esc(c.name)}<div class="muted mini">${esc(metricLabel(c.metric))}${c.level ? " · " + esc(c.level) : ""}</div></td>
+    <td><span class="mono mini">${esc(c.operator)} ${esc(c.threshold)}</span></td>
+    <td><strong>${esc(formatActual(c.actual))}</strong></td>
+    <td>${c.passed ? '<span class="badge passed">满足</span>' : `<span class="badge ${c.on_fail}">${c.on_fail === "blocked" ? "阻断" : "条件"}</span>`}</td>
+  </tr>`).join("");
+  const blockedNames = (d.blocked_conditions || []).map(x => x.name);
+  const condNames = (d.conditional_conditions || []).map(x => x.name);
+  $("#detail").innerHTML = `
+    <div class="row spread">
+      <div class="row">${outcomeBadge(d.outcome)} <strong>${esc(b.name || b.id)}</strong>
+        <span class="muted mini">规则版本 v${d.rule_version} · 判定人 ${esc(d.decided_by)} · ${fmtTime(d.decided_at)}</span>
+      </div>
+      <div class="row">
+        ${a ? approvalBadge(a.status) : ""}
+        ${rel ? '<span class="badge approved">已放行</span>' : ""}
+        <button class="btn secondary small" onclick="evaluateBuild('${b.id}')">按当前规则重新判定</button>
+        ${renderActionButton(b, d, a, rel)}
+      </div>
+    </div>
+    <div class="grid cols-4 mt">
+      <div class="stat"><div class="v">${m.pass_rate}%</div><div class="k">通过率（${m.passed}/${Math.max(0,m.total-m.skipped)}）</div></div>
+      <div class="stat"><div class="v">${m.coverage}%</div><div class="k">代码覆盖率</div></div>
+      <div class="stat ${m.failure_count ? "bad" : "good"}"><div class="v">${m.failure_count}</div><div class="k">失败/错误/超时</div></div>
+      <div class="stat ${m.open_defects ? "bad" : "good"}"><div class="v">${m.open_defects}</div><div class="k">未关闭缺陷</div></div>
+    </div>
+    <div class="mt">
+      <span class="metric-pill">P0 失败：<strong>${m.priority_failures.P0||0}</strong></span>
+      <span class="metric-pill">P1 失败：<strong>${m.priority_failures.P1||0}</strong></span>
+      <span class="metric-pill">P2 失败：<strong>${m.priority_failures.P2||0}</strong></span>
+      <span class="metric-pill">P3 失败：<strong>${m.priority_failures.P3||0}</strong></span>
+    </div>
+    ${blockedNames.length ? `<div class="mt"><h3>禁止发布原因</h3><ul>${blockedNames.map(n => `<li>${esc(n)}</li>`).join("")}</ul></div>` : ""}
+    ${condNames.length ? `<div class="mt"><h3>需确认的发布条件</h3><ul>${condNames.map(n => `<li>${esc(n)}</li>`).join("")}</ul></div>` : ""}
+    ${a ? `<div class="mt"><h3>人工审批</h3><p class="mini muted">申请：${esc(a.requested_by)} · ${fmtTime(a.requested_at)}
+      ${a.decided_by ? `<br>处理：${esc(a.decided_by)} · ${fmtTime(a.decided_at)} · ${esc(a.comment || "无备注")}` : ""}</p></div>` : ""}
+    ${rel ? `<div class="mt"><h3>放行记录</h3><p class="mini muted">操作人：${esc(rel.released_by)} · ${fmtTime(rel.released_at)} · ${esc(rel.comment || "无备注")}</p></div>` : ""}
+    <div class="mt"><h3>规则逐项判定</h3><table><thead><tr><th>条件</th><th>要求</th><th>实际值</th><th>结果</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function renderActionButton(b, d, a, rel) {
+  if (rel) return "";
+  if (d.outcome === "allow") return `<button class="btn green small" onclick="releaseBuild('${b.id}', false)">确认放行</button>`;
+  if (d.outcome === "conditional") return `<button class="btn small" onclick="releaseBuild('${b.id}', true)">确认风险并放行</button>`;
+  if (a && a.status === "approved") return `<button class="btn green small" onclick="releaseBuild('${b.id}', false)">审批已通过，执行放行</button>`;
+  return '<span class="badge blocked">等待人工审批</span>';
+}
+function formatActual(v) {
+  if (typeof v === "boolean") return v ? "是" : "否";
+  return v == null ? "—" : v;
+}
+
+async function evaluateBuild(id) {
+  const actor = operator(); if (!actor) return;
+  try {
+    await api(`/api/builds/${id}/gate/evaluate`, { method: "POST", body: { actor, force: true }});
+    toast("已按当前规则重新判定；历史判定仍保留");
+    await loadDashboard(); selectBuild(id);
+  } catch (e) { toast(e.message, "error"); }
+}
+async function releaseBuild(id, conditional) {
+  const actor = operator(); if (!actor) return;
+  const comment = prompt(conditional ? "请输入接受有条件发布的说明" : "请输入放行说明", conditional ? "已确认风险，允许发布" : "门禁通过，允许发布");
+  if (comment === null) return;
+  try {
+    await api(`/api/builds/${id}/release`, { method: "POST", body: {
+      actor, confirm_conditional: conditional, comment,
+    }});
+    toast("发布已放行并留痕");
+    await loadDashboard(); selectBuild(id);
+  } catch (e) { toast(e.message, "error"); }
+}
+
+function renderApprovals() {
+  const list = dashboard.pending_approvals || [];
+  $("#approvals").innerHTML = list.length ? list.map(a => `
+    <div class="audit-row">
+      <div class="row spread"><strong>${esc(a.build_id.slice(-10))}</strong>${approvalBadge(a.status)}</div>
+      <div class="muted mini">${esc(a.requested_by)} · ${fmtTime(a.requested_at)}</div>
+      <div class="row mt">
+        <button class="btn small green" onclick="decideApproval('${a.id}', true)">通过</button>
+        <button class="btn small danger" onclick="decideApproval('${a.id}', false)">驳回</button>
+        <button class="btn small secondary" onclick="selectBuild('${a.build_id}')">查看</button>
+      </div>
+    </div>`).join("") : '<div class="empty">没有待审批的禁止发布构建</div>';
+}
+async function decideApproval(id, approved) {
+  const actor = operator(); if (!actor) return;
+  const comment = prompt(approved ? "审批通过意见" : "驳回原因", approved ? "同意例外放行" : "");
+  if (comment === null) return;
+  if (!approved && !comment.trim()) return toast("驳回必须填写原因", "error");
+  try {
+    await api(`/api/gate-approvals/${id}/decision`, { method: "POST", body: {
+      actor, approved, comment,
+    }});
+    toast(approved ? "审批已通过" : "已驳回");
+    await loadDashboard();
+  } catch (e) { toast(e.message, "error"); }
+}
+
+function renderVersions() {
+  const versions = dashboard.rule_versions || [];
+  $("#versions").innerHTML = versions.length ? versions.map(v => `
+    <div class="audit-row">
+      <div class="row spread"><strong>v${v.version}</strong><span class="mini muted">${fmtTime(v.created_at)}</span></div>
+      <div class="mini">${esc(v.name)} · ${esc(v.created_by)} · ${v.conditions.length} 条条件</div>
+      <div class="mini muted">${esc(v.change_note || "无修改说明")}</div>
+      <button class="btn small secondary mt" onclick="loadVersion('${v.id}')">载入到编辑器</button>
+    </div>`).join("") : '<div class="empty">尚未保存自定义版本；当前使用系统默认规则。</div>';
+}
+async function loadVersion(id) {
+  const v = await api(`/api/gate-rules/${id}`);
+  $("#rule-name").value = v.name;
+  $("#rule-enabled").checked = v.enabled;
+  resetConditions(v.conditions);
+  toast("已载入历史规则；保存仍会生成新版本，历史判定不会被改写");
+}
+
+function renderAudit() {
+  const list = dashboard.recent_audit || [];
+  const labels = {
+    "rule.created": "创建规则", "rule.updated": "修改规则",
+    "gate.evaluated": "自动/人工判定", "approval.requested": "发起审批",
+    "approval.approved": "审批通过", "approval.rejected": "审批驳回",
+    "approval.superseded": "审批作废", "release.granted": "执行放行",
+  };
+  $("#audit").innerHTML = list.length ? list.map(e => `
+    <div class="audit-row">
+      <div class="row spread"><strong>${esc(labels[e.action] || e.action)}</strong><span class="muted mini">${fmtTime(e.at)}</span></div>
+      <div class="muted mini">${esc(e.actor)}${e.build_id ? " · " + esc(e.build_id.slice(-10)) : ""}</div>
+      ${e.comment ? `<div class="mini">${esc(e.comment)}</div>` : ""}
+    </div>`).join("") : '<div class="empty">暂无操作</div>';
+}
+
+$("#btn-refresh").onclick = loadDashboard;
+init();
+</script>
+</body>
+</html>

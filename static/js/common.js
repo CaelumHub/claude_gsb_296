@@ -10,6 +10,7 @@ const PAGES = [
   { file: "reports.html",     name: "测试报告",     desc: "通过率耗时" },
   { file: "coverage.html",    name: "代码覆盖率",   desc: "覆盖率分析" },
   { file: "defects.html",     name: "缺陷跟踪",     desc: "缺陷闭环" },
+  { file: "gates.html",       name: "发布门禁",     desc: "规则判定审批" },
   { file: "environments.html",name: "环境管理",     desc: "配置与依赖" },
   { file: "schedules.html",   name: "定时任务",     desc: "计划与触发" },
   { file: "notifications.html", name: "通知与集成", desc: "Webhook 等" },
@@ -18,7 +19,7 @@ const PAGES = [
 const PAGE_NAMES = {
   projects: "项目管理", cases: "测试用例", suites: "测试套件与分组",
   monitor: "执行监控", reports: "测试报告", coverage: "代码覆盖率",
-  defects: "缺陷跟踪", environments: "环境管理", schedules: "定时任务与触发",
+  defects: "缺陷跟踪", gates: "发布门禁", environments: "环境管理", schedules: "定时任务与触发",
   notifications: "通知与集成",
 };
 
@@ -28,6 +29,13 @@ const STATUS_LABELS = {
 };
 
 const PRIORITY_LABELS = { P0: "P0 · 最高", P1: "P1 · 高", P2: "P2 · 中", P3: "P3 · 低" };
+const GATE_OUTCOME_LABELS = {
+  allow: "允许发布", conditional: "有条件发布", blocked: "禁止发布",
+  not_evaluated: "未判定",
+};
+const APPROVAL_LABELS = {
+  pending: "待审批", approved: "审批通过", rejected: "已驳回", superseded: "已作废",
+};
 
 /* ---------- 导航注入 ---------- */
 function renderNav(activeFile) {
@@ -45,6 +53,8 @@ function renderNav(activeFile) {
 /* ---------- API 封装 ---------- */
 async function api(path, options = {}) {
   const opts = { headers: {}, ...options };
+  const operator = localStorage.getItem("gate_operator") || "";
+  if (operator && path.startsWith("/api/")) opts.headers["X-Operator"] = operator;
   if (opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData)) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(opts.body);

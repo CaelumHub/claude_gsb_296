@@ -181,9 +181,11 @@ td .mono { font-size: 12px; color: var(--text-muted); }
   background: var(--surface-2); color: var(--text-muted);
 }
 .badge.passed, .badge.ok, .badge.success { background: #e7f6ec; color: var(--green); }
-.badge.failed, .badge.error { background: #fdecec; color: var(--red); }
+.badge.failed, .badge.error, .badge.blocked, .badge.rejected { background: #fdecec; color: var(--red); }
+.badge.conditional, .badge.pending { background: #fef3c7; color: #92400e; }
+.badge.allow, .badge.approved { background: #e7f6ec; color: var(--green); }
+.badge.superseded { background: #f1f5f9; color: #94a3b8; }
 .badge.running { background: var(--primary-soft); color: var(--primary); }
-.badge.pending { background: #f1f5f9; color: #64748b; }
 .badge.cancelled, .badge.skipped { background: #f1f5f9; color: #94a3b8; }
 .badge.timeout { background: #fef3e2; color: var(--amber); }
 .badge.blue { background: var(--primary-soft); color: var(--blue); }

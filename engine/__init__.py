@@ -27,6 +27,7 @@ from .coverage import CoverageAnalyzer
 from .report import ReportGenerator
 from .defects import DefectManager
 from .notify import NotificationManager
+from .gate import ReleaseGateManager
 from .scheduler import Scheduler
 
 __all__ = [
@@ -45,5 +46,6 @@ __all__ = [
     "ReportGenerator",
     "DefectManager",
     "NotificationManager",
+    "ReleaseGateManager",
     "Scheduler",
 ]

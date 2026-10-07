@@ -33,6 +33,7 @@ class Scheduler:
 
     def __init__(self, registry, build_registry, executor, env_manager,
                  report_gen, coverage_analyzer, defect_manager, notify_manager,
+                 gate_manager=None,
                  max_build_workers: int = 4, max_case_workers: int = 8,
                  tick_seconds: float = 20.0):
         self.registry = registry
@@ -43,6 +44,7 @@ class Scheduler:
         self.coverage = coverage_analyzer
         self.defects = defect_manager
         self.notify = notify_manager
+        self.gate = gate_manager
 
         self.max_build_workers = max_build_workers
         self.max_case_workers = max_case_workers
@@ -212,7 +214,8 @@ class Scheduler:
         store.append_log(build_id, f"构建结束: {status}（通过 {build.get('passed', 0)}"
                                    f"/{build.get('total', 0)}）")
 
-        # 收尾：报告 + 覆盖率 + 通知 + 自动缺陷
+        # 收尾：报告 + 覆盖率 + 通知 + 自动缺陷 + 发布门禁。
+        # 必须在所有结果持久化之后执行，避免门禁/报告读到尚未完全落盘的数据。
         self._finalize(project_id, build_id)
 
         with self._running_lock:
@@ -272,6 +275,13 @@ class Scheduler:
             failures = store.results(build_id, where=[("status", "in", ["failed", "error", "timeout"])])
             for fr in failures[:20]:
                 self.defects.create_from_case(project_id, fr, build_id)
+
+        # 报告、覆盖率、缺陷都齐备后再判定发布门禁，并固化当时规则与指标。
+        if self.gate is not None:
+            try:
+                self.gate.evaluate_build(project_id, build_id, actor="system")
+            except Exception as exc:  # noqa: BLE001
+                store.append_log(build_id, f"发布门禁判定异常: {exc}")
 
     # ------------------------------------------------------------------ 定时循环
     def _tick_loop(self) -> None:

@@ -57,12 +57,26 @@ def _notify():
     return current_app.config["NOTIFY"]
 
 
+def _gate():
+    return current_app.config["GATE"]
+
+
 def _payload() -> dict:
     return request.get_json(silent=True) or {}
 
 
 def _err(msg: str, code: int = 400):
     return jsonify({"error": msg}), code
+
+
+def _actor(data: dict | None = None) -> str:
+    """从请求头或 JSON body 获取操作人；后台系统操作才允许使用 system。"""
+    data = data if data is not None else {}
+    actor = (request.headers.get("X-Operator")
+             or request.headers.get("X-Actor")
+             or data.get("actor")
+             or "").strip()
+    return actor
 
 
 def _store(name: str):
@@ -686,6 +700,143 @@ def test_integration(integration_id: str):
 @api.get("/projects/<project_id>/events")
 def list_events(project_id: str):
     return jsonify({"events": _notify().events(project_id)})
+
+
+# ---------------------------------------------------------------------------
+# 发布门禁：规则、判定、审批、放行与审计
+# ---------------------------------------------------------------------------
+
+@api.get("/projects/<project_id>/gate")
+def gate_dashboard(project_id: str):
+    return jsonify(_gate().dashboard(project_id))
+
+
+@api.get("/projects/<project_id>/gate/rule")
+def get_gate_rule(project_id: str):
+    return jsonify(_gate().get_rule(project_id))
+
+
+@api.put("/projects/<project_id>/gate/rule")
+def update_gate_rule(project_id: str):
+    data = _payload()
+    actor = _actor(data)
+    if not actor:
+        return _err("缺少操作人，请通过 X-Operator 请求头或 actor 字段传入", 400)
+    try:
+        rule = _gate().update_rule(project_id, data, actor)
+    except ValueError as exc:
+        return _err(str(exc))
+    return jsonify(rule)
+
+
+@api.get("/projects/<project_id>/gate/rule/versions")
+def gate_rule_versions(project_id: str):
+    return jsonify({"versions": _gate().list_rules(project_id)})
+
+
+@api.get("/gate-rules/<rule_id>")
+def get_gate_rule_by_id(rule_id: str):
+    rule = _gate().get_rule_by_id(rule_id)
+    if rule is None:
+        return _err("规则版本不存在", 404)
+    return jsonify(rule)
+
+
+@api.get("/projects/<project_id>/gate/decisions")
+def list_gate_decisions(project_id: str):
+    return jsonify({"decisions": _gate().list_decisions(project_id)})
+
+
+@api.get("/projects/<project_id>/gate/audit")
+def list_gate_audit(project_id: str):
+    build_id = request.args.get("build_id")
+    return jsonify({"audit": _gate().list_audit(project_id, build_id=build_id)})
+
+
+@api.get("/projects/<project_id>/gate/approvals")
+def list_gate_approvals(project_id: str):
+    status = request.args.get("status")
+    return jsonify({"approvals": _gate().list_approvals(project_id, status=status)})
+
+
+@api.get("/builds/<build_id>/gate")
+def get_build_gate(build_id: str):
+    build, err = _build_or_404(build_id)
+    if err:
+        return err
+    gate = _gate()
+    decision = gate.latest_decision(build["project_id"], build_id)
+    approval = None
+    release = None
+    if decision:
+        if decision.get("approval_id"):
+            approval = gate.get_approval(decision["approval_id"])
+        release = gate.latest_release(build["project_id"], build_id)
+    return jsonify({"build_id": build_id, "project_id": build["project_id"],
+                    "decision": decision, "approval": approval,
+                    "release": release})
+
+
+@api.post("/builds/<build_id>/gate/evaluate")
+def evaluate_build_gate(build_id: str):
+    build, err = _build_or_404(build_id)
+    if err:
+        return err
+    data = _payload()
+    actor = _actor(data)
+    if not actor:
+        return _err("缺少操作人，请通过 X-Operator 请求头或 actor 字段传入", 400)
+    try:
+        decision = _gate().evaluate_build(
+            build["project_id"], build_id, actor=actor,
+            force=bool(data.get("force", True)))
+    except ValueError as exc:
+        return _err(str(exc))
+    return jsonify(decision)
+
+
+@api.get("/gate-approvals/<approval_id>")
+def get_gate_approval(approval_id: str):
+    approval = _gate().get_approval(approval_id)
+    if approval is None:
+        return _err("审批单不存在", 404)
+    return jsonify(approval)
+
+
+@api.post("/gate-approvals/<approval_id>/decision")
+def decide_gate_approval(approval_id: str):
+    data = _payload()
+    actor = _actor(data)
+    if not actor:
+        return _err("缺少操作人，请通过 X-Operator 请求头或 actor 字段传入", 400)
+    try:
+        approval = _gate().decide_approval(
+            approval_id, bool(data.get("approved", False)), actor,
+            comment=data.get("comment", ""))
+    except ValueError as exc:
+        return _err(str(exc))
+    return jsonify(approval)
+
+
+@api.post("/builds/<build_id>/release")
+def release_build(build_id: str):
+    build, err = _build_or_404(build_id)
+    if err:
+        return err
+    data = _payload()
+    actor = _actor(data)
+    if not actor:
+        return _err("缺少操作人，请通过 X-Operator 请求头或 actor 字段传入", 400)
+    try:
+        release = _gate().release_build(
+            build["project_id"], build_id, actor,
+            confirm_conditional=bool(data.get("confirm_conditional", False)),
+            comment=data.get("comment", ""))
+    except PermissionError as exc:
+        return _err(str(exc), 403)
+    except ValueError as exc:
+        return _err(str(exc))
+    return jsonify(release)
 
 
 # ---------------------------------------------------------------------------
